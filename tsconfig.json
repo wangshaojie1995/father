@@ -1,8 +1,16 @@
 {
   "compilerOptions": {
-    "target": "esnext",
+    "strict": true,
+    "target": "es2019",
+    "module": "commonjs",
     "moduleResolution": "node",
-    "jsx": "preserve",
-    "esModuleInterop": true
-  }
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "declaration": true,
+    "esModuleInterop": true,
+    "baseUrl": "./",
+    "outDir": "./dist",
+    "rootDir": "./src"
+  },
+  "include": ["src"]
 }

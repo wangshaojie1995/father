@@ -1,75 +1,36 @@
-# Contribute
+# Contributing Guide
 
-> Notice: `y` is the alias for `yarn`, `n` is the alias for `npm`.
+Loving father and want to get involved? Thanks!
 
 ## Set up
 
-Install dev deps after git clone the repo.
-
 ```bash
-$ y
+# Clone this repo
+$ git clone git@github.com:umijs/father.git
+$ cd father
+
+# Install Dependencies
+$ pnpm i
+
+# Compile Src
+$ pnpm build
 ```
 
-Bootstrap every package with yarn. (Need to execute when new package is included)
+## Run Example
 
 ```bash
-$ y bootstrap
+$ cd examples/normal
+$ pnpm build
 ```
 
-Link father globally.
+## Test
 
 ```bash
-$ cd packages/father
-$ y link
+$ pnpm test
 ```
 
-## Common Tasks
-
-Monitor file changes and transform with babel.
+## Release
 
 ```bash
-$ y build --watch
+$ pnpm release
 ```
-
-Run test.
-
-```bash
-# Including e2e test
-$ y test
-
-# Unit test only
-$ y debug .test.(t|j)s
-
-# Test specified file and watch
-$ y debug father-build/src/build.test.ts -w
-```
-
-## Publish
-
-Add tag for PRs, changelog is generated based on these tags.
-
-* pr(bug)
-* pr(enhancement)
-* pr(chore)
-* pr(dependency)
-
-Generate changelog.
-
-```bash
-$ y changelog
-```
-
-Publish to npm.
-
-```bash
-# Can't use yarn for this command.
-$ n run publish
-```
-
-Debug doc in local.
-
-```bash
-$ y doc:dev
-```
-
-Paste the previously generated changelog at [umijs/father#release](https://github.com/umijs/father/releases).

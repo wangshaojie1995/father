@@ -1,0 +1,13 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": "./",
+    "paths": {
+      "alias-module": ["./src/alias.ts"],
+      "@/*": ["./src/*"],
+      "@umijs/max": ["./src/packages/max"],
+      "@components/*": ["./src/components/*"],
+      "@umijs/utils-test": ["./src/testUtils.ts"]
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "declaration": true,
+    "baseUrl": "./",
+    "paths": {
+      "@bundless-overrides": ["../bundless-overrides/src/client"]
+    }
+  }
+}

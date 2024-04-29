@@ -1,0 +1,7 @@
+{
+  "sideEffects": false,
+  "files": [],
+  "dependencies": {
+    "esm": "0.0.0"
+  }
+}
