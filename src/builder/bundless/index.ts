@@ -1,4 +1,12 @@
-import { chalk, chokidar, debug, glob, lodash, rimraf } from '@umijs/utils';
+import {
+  chalk,
+  chokidar,
+  debug,
+  glob,
+  lodash,
+  rimraf,
+  winPath,
+} from '@umijs/utils';
 import fs from 'fs';
 import path from 'path';
 import {
@@ -8,10 +16,16 @@ import {
 } from '../../constants';
 import { logger } from '../../utils';
 import type { BundlessConfigProvider } from '../config';
-import getDeclarations from './dts';
-import type { ILoaderArgs } from './loaders';
+import getDeclarations, { withTsconfigCache } from './dts';
+import type { IDeclarationResult, ILoaderArgs } from './loaders';
 import runLoaders from './loaders';
 import { IJSTransformer, IJSTransformerFn } from './loaders/types';
+import {
+  finalizeOutputs,
+  getDeclarationFile,
+  getOutputFile,
+  getRuntimePath,
+} from './output';
 import createParallelLoader from './parallelLoader';
 
 const debugLog = debug(DEBUG_BUNDLESS_NAME);
@@ -83,7 +97,7 @@ function replacePathExt(filePath: string, ext: string) {
 /**
  * transform specific files
  */
-async function transformFiles(
+function transformFiles(
   files: string[],
   opts: {
     cwd: string;
@@ -91,11 +105,26 @@ async function transformFiles(
     watch?: true;
     incremental?: boolean;
   },
+): Promise<number> {
+  return withTsconfigCache(() => runTransformFiles(files, opts));
+}
+
+async function runTransformFiles(
+  files: string[],
+  opts: Parameters<typeof transformFiles>[1],
 ) {
   try {
     let count = 0;
+    const outputs: { file: string; sourceFile: string }[] = [];
     let bundlessPromises = [];
-    let declarationFileMap = new Map<string, string>();
+    let declarationFileMap = new Map<
+      string,
+      {
+        outputDir: string;
+        compiler?: IDeclarationResult[2];
+        failOnError?: boolean;
+      }
+    >();
 
     // process all matched items
     for (let item of files) {
@@ -107,7 +136,17 @@ async function transformFiles(
           config.output!,
           path.relative(config.input, item),
         );
-        let itemDistAbsPath = path.join(opts.cwd, itemDistPath);
+        let itemDistAbsPath = config.autoExtension
+          ? getOutputFile(itemAbsPath, opts.cwd, opts.configProvider)
+          : path.join(opts.cwd, itemDistPath);
+        if (config.autoExtension)
+          itemDistPath = path.relative(opts.cwd, itemDistAbsPath);
+        outputs.push({
+          file: /\.d\.[cm]?ts$/.test(itemDistAbsPath)
+            ? itemDistAbsPath
+            : getRuntimePath(itemDistAbsPath),
+          sourceFile: itemAbsPath,
+        });
         const parentPath = path.dirname(itemDistAbsPath);
 
         // create parent directory if not exists
@@ -145,7 +184,11 @@ async function transformFiles(
     const results = await Promise.all(bundlessPromises);
     lodash.forEach(results, (item) => {
       if (item) {
-        declarationFileMap.set(item[0], item[1]);
+        declarationFileMap.set(item[0], {
+          outputDir: item[1],
+          compiler: item[2],
+          failOnError: item[3],
+        });
       }
     });
 
@@ -153,20 +196,66 @@ async function transformFiles(
       logger.quietExpect.event(
         `Generate declaration file${declarationFileMap.size > 1 ? 's' : ''}...`,
       );
-      const declarations = await getDeclarations(
-        [...declarationFileMap.keys()],
-        {
-          cwd: opts.cwd,
-        },
+      const declarationGroups = lodash.groupBy(
+        [...declarationFileMap.entries()],
+        ([, meta]) => meta.compiler || 'tsc',
       );
-      declarations.forEach((item) => {
-        fs.writeFileSync(
-          path.join(declarationFileMap.get(item.sourceFile)!, item.file),
-          item.content,
-          'utf-8',
+
+      for (const [compiler, entries] of Object.entries(declarationGroups)) {
+        const outputDirs = new Map(
+          entries.map(([file, meta]) => [file, meta.outputDir]),
         );
-      });
+        const strictFiles = entries
+          .filter(([, meta]) => meta.failOnError)
+          .map(([file]) => file);
+        const declarations = await getDeclarations(
+          entries.map(([file]) => file),
+          {
+            cwd: opts.cwd,
+            compiler: compiler as IDeclarationResult[2],
+            outputDirs,
+            failOnError: strictFiles.length > 0,
+          },
+        );
+
+        if (strictFiles.length) {
+          const declaredFiles = new Set(
+            declarations
+              .filter(({ file }) => /\.d\.[cm]?ts$/.test(file))
+              .map(({ sourceFile }) => winPath(sourceFile)),
+          );
+          const missingFiles = strictFiles.filter(
+            (file) => !declaredFiles.has(file),
+          );
+          if (missingFiles.length) {
+            const paths = missingFiles
+              .map((file) => winPath(path.relative(opts.cwd, file)))
+              .join('\n');
+            throw new Error(
+              `Declaration generation failed. No declaration files emitted for:\n${paths}`,
+            );
+          }
+        }
+
+        declarations.forEach((item) => {
+          const config = opts.configProvider.getConfigForFile(
+            winPath(path.relative(opts.cwd, item.sourceFile)),
+          )!;
+          const filename = config.autoExtension
+            ? getDeclarationFile(
+                item.file,
+                getOutputFile(item.sourceFile, opts.cwd, opts.configProvider),
+              )
+            : item.file;
+          const file = path.join(outputDirs.get(item.sourceFile)!, filename);
+          fs.writeFileSync(file, item.content, 'utf-8');
+          outputs.push({ file, sourceFile: item.sourceFile });
+        });
+      }
     }
+
+    // Run after all JS, assets and declarations exist, including cache hits.
+    finalizeOutputs(outputs, opts.cwd, opts.configProvider);
 
     return count;
   } catch (err: any) {
@@ -263,7 +352,29 @@ async function bundless(
             path.relative(config.input, rltFilePath),
           );
           // TODO: collect real emit files
-          const relatedFiles = isTsFile
+          const emitted = getOutputFile(
+            path.resolve(opts.cwd, rltFilePath),
+            opts.cwd,
+            opts.configProvider,
+          );
+          const relatedFiles = config.autoExtension
+            ? [
+                emitted,
+                `${emitted}.map`,
+                ...(isTsFile && !/\.d\.ts$/.test(rltFilePath)
+                  ? [
+                      getDeclarationFile(
+                        replacePathExt(emitted, '.d.ts'),
+                        emitted,
+                      ),
+                      getDeclarationFile(
+                        replacePathExt(emitted, '.d.ts.map'),
+                        emitted,
+                      ),
+                    ]
+                  : []),
+              ]
+            : isTsFile
             ? [
                 replacePathExt(fileDistAbsPath, '.js'),
                 replacePathExt(fileDistAbsPath, '.d.ts'),

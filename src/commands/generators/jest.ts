@@ -1,8 +1,8 @@
 import { GeneratorType } from '@umijs/core';
-import { logger } from '../../utils';
 import { existsSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { IApi } from '../../types';
+import { logger } from '../../utils';
 import { GeneratorHelper, promptsExitWhenCancel } from './utils';
 
 export default (api: IApi) => {
@@ -34,8 +34,8 @@ export default (api: IApi) => {
       });
 
       const basicDeps = {
-        jest: '^27',
-        '@types/jest': '^27',
+        jest: '^29',
+        '@types/jest': '^29',
         // we use `jest.config.ts` so jest needs ts and ts-node
         typescript: '^4',
         'ts-node': '^10',

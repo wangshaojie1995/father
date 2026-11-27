@@ -3,6 +3,7 @@ import type Autoprefixer from '@umijs/bundler-webpack/compiled/autoprefixer';
 import type IWebpackChain from '@umijs/bundler-webpack/compiled/webpack-5-chain';
 import type { IConfig as IBundlerWebpackConfig } from '@umijs/bundler-webpack/dist/types';
 import type { IAdd, IModify, IServicePluginAPI, PluginAPI } from '@umijs/core';
+import type { BundleOptions as IUtooPackBundleOptions } from '@utoo/pack';
 import type { ITransformerItem } from './builder/bundless/loaders/javascript';
 import type {
   IBundleConfig,
@@ -68,6 +69,11 @@ export type IApi = PluginAPI &
      */
     config: Omit<IFatherConfig, 'extends'>;
     userConfig: IFatherConfig;
+
+    /**
+     * lifecycle
+     */
+    onAllBuildComplete: () => void;
   };
 
 export enum IFatherBuildTypes {
@@ -90,6 +96,33 @@ export enum IFatherBundlessTypes {
   ESM = 'esm',
   CJS = 'cjs',
 }
+
+export enum IFatherBundlerTypes {
+  WEBPACK = 'webpack',
+  UTOO_PACK = 'utoopack',
+}
+
+export enum IFatherDtsCompilerTypes {
+  TSC = 'tsc',
+  TSGO = 'tsgo',
+}
+
+export interface IFatherDtsConfig {
+  /**
+   * declaration compiler
+   * @default tsc
+   * @experimental tsgo requires TypeScript 7 (direct or @typescript/native alias) or @typescript/native-preview
+   */
+  compiler?: `${IFatherDtsCompilerTypes}`;
+
+  /**
+   * fail when a scheduled declaration cannot be generated
+   * @default false
+   */
+  failOnError?: boolean;
+}
+
+export type IFatherUtooPackConfig = Partial<IUtooPackBundleOptions['config']>;
 
 export interface IFatherBaseConfig {
   /**
@@ -119,6 +152,16 @@ export interface IFatherBaseConfig {
   extraBabelPlugins?: IBundlerWebpackConfig['extraBabelPlugins'];
 
   /**
+   * configure transform runtime
+   */
+  transformRuntime?: {
+    /**
+     * absolute dir path which contains @babel/runtime
+     */
+    absoluteRuntime?: string;
+  };
+
+  /**
    * output sourcemap
    */
   sourcemap?: boolean;
@@ -127,9 +170,43 @@ export interface IFatherBaseConfig {
    * compile targets
    */
   targets?: Record<string, number>;
+
+  /**
+   * bundler type - webpack or utoopack
+   */
+  bundler?: `${IFatherBundlerTypes}`;
+
+  /**
+   * root path for utoopack
+   *
+   * when you use utoopack under monorepo, you should use this set monorepo rootPath
+   *
+   * it will help find the root node_modules for utoopack resolver.
+   */
+  rootPath?: string;
+
+  /**
+   * configure TypeScript declaration generation
+   */
+  dts?: IFatherDtsConfig;
 }
 
 export interface IFatherBundlessConfig extends IFatherBaseConfig {
+  /**
+   * choose .js/.mjs/.cjs by package type and match declaration extensions
+   * @default false
+   */
+  autoExtension?: boolean;
+
+  /**
+   * complete module references in JavaScript and declarations independently
+   * @default each extension option follows autoExtension (false by default)
+   */
+  redirect?: {
+    js?: { extension?: boolean };
+    dts?: { extension?: boolean };
+  };
+
   /**
    * source code directory
    * @default src
@@ -221,6 +298,28 @@ export interface IFatherBundleConfig extends IFatherBaseConfig {
    * configure less variables
    */
   theme?: Record<string, string>;
+
+  /**
+   * output unminified js file
+   * @default false
+   * @note When set to true, unminified js file will be generated in the same directory without sourcemap.
+   */
+  generateUnminified?: boolean;
+
+  /**
+   * copy
+   */
+  copy?: IBundlerWebpackConfig['copy'];
+
+  /**
+   * scope hoisting
+   */
+  concatenateModules?: boolean;
+
+  /**
+   * configure utoopack
+   */
+  utoopack?: IFatherUtooPackConfig;
 }
 
 export interface IFatherPreBundleConfig {
@@ -258,6 +357,12 @@ export interface IFatherConfig extends IFatherBaseConfig {
    * transformer config (esm)
    */
   esm?: IFatherBundlessConfig & {
+    /**
+     * resolve dependency subpaths for packages without exports
+     * @default false
+     */
+    resolveDepSubpath?: boolean;
+
     /**
      * output directory
      * @default dist/esm

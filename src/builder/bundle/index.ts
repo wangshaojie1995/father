@@ -1,17 +1,27 @@
 import type { webpack } from '@umijs/bundler-webpack';
 import { chalk, importLazy, lodash } from '@umijs/utils';
+import type { BundleOptions } from '@utoo/pack';
+import fs from 'fs';
 import path from 'path';
 import { getCachePath, logger } from '../../utils';
-import type { BundleConfigProvider } from '../config';
+import type { BundleConfigProvider, IBundleConfig } from '../config';
 import {
+  convertCopyConfig,
+  convertExternalsToUtooPackExternals,
   getBabelPresetReactOpts,
   getBabelStyledComponentsOpts,
   getBundleTargets,
+  getSWCTransformReactOpts,
 } from '../utils';
 
-const bundler: typeof import('@umijs/bundler-webpack') = importLazy(
+const webpackBundler: typeof import('@umijs/bundler-webpack') = importLazy(
   path.dirname(require.resolve('@umijs/bundler-webpack/package.json')),
 );
+
+const utooPackBundler: typeof import('@utoo/pack') = importLazy(
+  path.dirname(require.resolve('@utoo/pack/package.json')),
+);
+
 const {
   CSSMinifier,
   JSMinifier,
@@ -31,6 +41,42 @@ interface IBundleOpts {
   incremental?: boolean;
 }
 
+export function mergeUtooPackConfig(
+  config: BundleOptions['config'],
+  userConfig?: IBundleConfig['utoopack'],
+): BundleOptions['config'] {
+  return lodash.merge({}, config, userConfig);
+}
+
+function resolveEntryPath(entryPath: string): string {
+  // If path already has an extension, return as is
+  if (path.extname(entryPath)) {
+    return entryPath;
+  }
+
+  const extensions = ['.ts', '.tsx', '.js', '.jsx'];
+  for (const ext of extensions) {
+    const fullPath = `${entryPath}${ext}`;
+    if (fs.existsSync(fullPath)) {
+      return fullPath;
+    }
+  }
+
+  return entryPath;
+}
+
+function getUtooPackVersion() {
+  try {
+    const pkg = require(path.join(
+      require.resolve('@utoo/pack'),
+      '../../package.json',
+    ));
+    return pkg.version as string | undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function bundle(
   opts: Omit<IBundleOpts, 'watch' | 'incremental'>,
 ): Promise<void>;
@@ -38,6 +84,8 @@ function bundle(opts: IBundleOpts): Promise<IBundleWatcher>;
 async function bundle(opts: IBundleOpts): Promise<void | IBundleWatcher> {
   const enableCache = process.env.FATHER_CACHE !== 'none';
   const closeHandlers: webpack.Watching['close'][] = [];
+  let utooPackVersion: string | undefined;
+  let hasLoggedUtooPackVersion = false;
 
   if (!opts.incremental) {
     for (let i = 0; i < opts.configProvider.configs.length; i += 1) {
@@ -58,8 +106,18 @@ async function bundle(opts: IBundleOpts): Promise<void | IBundleWatcher> {
       );
 
       // log for normal build
+      if (config.bundler === 'utoopack' && !hasLoggedUtooPackVersion) {
+        hasLoggedUtooPackVersion = true;
+        utooPackVersion = getUtooPackVersion();
+        logger.info(
+          `Using ${chalk.cyan('@utoo/pack')}${
+            utooPackVersion ? chalk.blueBright(`@${utooPackVersion}`) : ''
+          }`,
+        );
+      }
       !opts.watch && logStatus();
-      await bundler.build({
+      const startTime = Date.now();
+      const webpackBundlerOpts = {
         cwd: opts.cwd,
         watch: opts.watch,
         config: {
@@ -70,7 +128,6 @@ async function bundle(opts: IBundleOpts): Promise<void | IBundleWatcher> {
           devtool: config.sourcemap && 'source-map',
           externals: config.externals,
           outputPath: config.output.path,
-
           // postcss config
           extraPostCSSPlugins,
           postcssLoader,
@@ -82,7 +139,7 @@ async function bundle(opts: IBundleOpts): Promise<void | IBundleWatcher> {
 
           // compatible with IE11 by default
           targets: getBundleTargets(config),
-          jsMinifier: JSMinifier.terser,
+          jsMinifier: config.jsMinifier || JSMinifier.terser,
           cssMinifier: CSSMinifier.cssnano,
           extraBabelIncludes: [/node_modules/],
 
@@ -107,7 +164,7 @@ async function bundle(opts: IBundleOpts): Promise<void | IBundleWatcher> {
               opts.cwd,
             ),
             presetTypeScript: {},
-            pluginTransformRuntime: {},
+            pluginTransformRuntime: config.transformRuntime || {},
             pluginLockCoreJS: {},
             pluginDynamicImportNode: false,
           },
@@ -132,9 +189,14 @@ async function bundle(opts: IBundleOpts): Promise<void | IBundleWatcher> {
             memo.output.library(config.name);
           }
 
-          // modify webpack target
+          // modify webpack target and disable browser polyfills for node platform
           if (config.platform === 'node') {
             memo.target('node');
+            // Remove browser polyfills for process/Buffer that are injected by
+            // @umijs/bundler-webpack's addNodePolyfill, as they override Node.js
+            // built-ins with browser shims, breaking CLI tools that rely on
+            // process.argv, process.exit, etc.
+            memo.plugins.delete('node-polyfill-provider');
           }
 
           if (enableCache) {
@@ -187,7 +249,79 @@ async function bundle(opts: IBundleOpts): Promise<void | IBundleWatcher> {
             }
           : {}),
         disableCopy: true,
-      });
+      };
+      if (config.bundler === 'utoopack') {
+        const entryName = path.parse(config.output.filename).name;
+        const distPath = config.output.path;
+        const externals = convertExternalsToUtooPackExternals(config.externals);
+        const copy = convertCopyConfig(config.copy, distPath);
+        const entryPath = resolveEntryPath(path.join(opts.cwd, config.entry));
+        const reactOpts = getSWCTransformReactOpts(
+          opts.configProvider.pkg,
+          opts.cwd,
+        );
+        const utooPackOpts: BundleOptions = {
+          config: mergeUtooPackConfig(
+            {
+              entry: [
+                {
+                  name: entryName,
+                  import: entryPath,
+                  library: {
+                    name: config.name,
+                    export: [],
+                  },
+                },
+              ],
+              mode: opts.watch ? 'development' : 'production',
+              resolve: {
+                alias: config.alias,
+              },
+              sourceMaps: Boolean(config.sourcemap),
+              externals,
+              define: config.define,
+              react: {
+                runtime: reactOpts.runtime,
+                importSource: reactOpts.importSource,
+              },
+              styles: {
+                ...(config.extractCSS !== false ? {} : { inlineCss: {} }),
+              },
+              output: {
+                path: distPath,
+                filename: config.output.filename,
+                cssFilename: '[name].css',
+                assetModuleFilename: 'static/[name].[contenthash:8]',
+                copy,
+              },
+              optimization: {
+                minify: config.jsMinifier !== JSMinifier.none,
+                concatenateModules: config.concatenateModules,
+              },
+              persistentCaching: false,
+              nodePolyfill: true,
+            },
+            config.utoopack,
+          ),
+          watch: {
+            enable: opts.watch ?? false,
+          },
+          dev: opts.watch ?? false,
+          tracing: false,
+          buildId: '',
+        };
+        const projectPath = opts.cwd;
+        const rootPath = config.rootPath;
+        await utooPackBundler.build(utooPackOpts, projectPath, rootPath);
+      } else {
+        await webpackBundler.build(webpackBundlerOpts as any);
+      }
+      !opts.watch &&
+        logger.info(
+          `Compiled ${chalk.green('successfully')} in ${chalk.dim(
+            `${Date.now() - startTime} ms`,
+          )}`,
+        );
     }
   }
 

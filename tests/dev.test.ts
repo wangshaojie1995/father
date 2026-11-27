@@ -18,6 +18,7 @@ const wait = (
 
 // use global for mock scope
 global.TMP_WATCHERS = [];
+global.TMP_WATCHER_READY = [];
 global.TMP_CASE_CONFIG = CASE_CONFIG;
 
 jest.mock('../src/builder/bundle/index.ts', () => {
@@ -49,6 +50,12 @@ jest.mock('@umijs/utils', () => {
         const ret = originalModule.chokidar.watch(...args);
 
         global.TMP_WATCHERS.push(ret);
+        global.TMP_WATCHER_READY.push(
+          new Promise<void>((resolve, reject) => {
+            ret.once('ready', resolve);
+            ret.once('error', reject);
+          }),
+        );
 
         return ret;
       },
@@ -92,13 +99,14 @@ beforeAll(async () => {
   });
 
   // await chokidar ready
-  await wait(100);
+  await Promise.all(global.TMP_WATCHER_READY);
 });
 
 afterAll(async () => {
   // close watchers
   await Promise.all(global.TMP_WATCHERS.map((watcher) => watcher.close()));
   delete global.TMP_WATCHERS;
+  delete global.TMP_WATCHER_READY;
   delete global.TMP_CASE_CONFIG;
   delete global.TMP_TRANSFORMER;
   delete process.env.APP_ROOT;
@@ -138,37 +146,20 @@ test('dev: file change', async () => {
     'utf-8',
   );
 
-  await Promise.all([
-    // wait for watch debounce and compile
-    wait(WATCH_DEBOUNCE_STEP + 500),
-    // wait for webpack compilation done
-    new Promise<void>((resolve) => {
-      const logSpy = jest.spyOn(console, 'log');
-      const handler = () => {
-        try {
-          expect(console.log).toHaveBeenCalledWith(
-            // badge
-            expect.stringContaining('-'),
-            // time
-            expect.stringContaining('['),
-            // content
-            expect.stringContaining('Bundle '),
-          );
-          logSpy.mockRestore();
-          resolve();
-        } catch {
-          setTimeout(handler, 500);
-        }
-      };
-
-      handler();
-    }),
-  ]);
-
-  const fileMap = distToMap(CASE_DIST);
-
-  expect(fileMap['esm/index.js']).toContain(content);
-  expect(fileMap['umd/index.min.js']).toContain(content);
+  // Webpack and bundless transforms finish independently. Wait for both
+  // outputs instead of treating a webpack log and a fixed delay as completion.
+  const deadline = Date.now() + 15000;
+  while (true) {
+    try {
+      const fileMap = distToMap(CASE_DIST);
+      expect(fileMap['esm/index.js']).toContain(content);
+      expect(fileMap['umd/index.min.js']).toContain(content);
+      break;
+    } catch (error) {
+      if (Date.now() >= deadline) throw error;
+      await wait(100);
+    }
+  }
 });
 
 test('dev: file add', async () => {

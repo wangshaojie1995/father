@@ -2,6 +2,18 @@
 
 father 支持以下配置项。
 
+## 环境变量
+
+### FATHER_TSCONFIG_NAME
+
+- 默认值：tsconfig.name
+
+在许多项目中，供编辑器使用的 `tsconfig` 配置并不适合直接用来构建，因此可能需要提供一个 `tsconfig.build.json` 来定制构建的规则。
+
+```bash
+FATHER_TSCONFIG_NAME=tsconfig.build.json father build
+```
+
 ## 公共配置
 
 ### alias
@@ -24,6 +36,63 @@ father 支持以下配置项。
 - 默认值：`undefined`
 
 指定继承的父配置文件路径。
+
+### dts
+
+- 类型：`{ compiler?: 'tsc' | 'tsgo'; failOnError?: boolean }`
+- 默认值：`{ compiler: 'tsc', failOnError: false }`
+
+配置 TypeScript 类型声明生成方式。默认使用 father 内置的 TypeScript Compiler API；当配置为 `compiler: 'tsgo'` 时，会使用 TypeScript 7 原生编译器（或旧版 tsgo preview）生成 `.d.ts` 文件。
+
+#### 声明文件缺失时使构建失败
+
+`failOnError: true` 要求 Bundless 构建为每个参与声明生成的源文件产出声明文件。比如，`tsconfig` 同时开启 `declaration` 和 `noEmit`，或 `noEmitOnError` 因构建范围之外的类型错误阻止生成声明时，`father build` 会以非零退出码结束。Watch 模式会报告错误并继续监听。是否生成声明仍由 `tsconfig` 决定。
+
+在 `.fatherrc.ts` 中可以通过顶层 `dts` 为 ESM 和 CJS 启用，也可以在 `esm.dts` 或 `cjs.dts` 中单独配置。
+
+```ts
+export default {
+  esm: {},
+  dts: { failOnError: true },
+};
+```
+
+#### 使用原生 TypeScript 编译器
+
+开启 `compiler: 'tsgo'` 会使用 [TypeScript 7 原生编译器](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/) 生成类型声明文件，在保留类型检查的同时，可以显著加快类型生成速度。配置名 `tsgo` 会继续保留，以兼容已经启用该能力的项目。
+
+1. 安装 TypeScript 7 作为开发依赖：
+
+```bash
+pnpm add typescript@^7 -D
+```
+
+如果项目中的工具仍依赖 TypeScript Compiler API，可以按照 [TypeScript 官方推荐的 alias 方案](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/#running-side-by-side-with-typescript-6.0)并行安装 TypeScript 7 和 TypeScript 6 兼容包：
+
+```json
+{
+  "devDependencies": {
+    "@typescript/native": "npm:typescript@^7.0.2",
+    "typescript": "npm:@typescript/typescript6@^6.0.2"
+  }
+}
+```
+
+> TypeScript 7 要求 Node.js 16.20.0 或更高版本。father 会识别直接安装的 `typescript@7` 和官方约定的 `@typescript/native` alias，也会继续识别 `@typescript/native-preview`，以兼容尚未迁移的项目。
+
+2. 在 father 配置中启用原生声明生成：
+
+```ts
+export default {
+  esm: {
+    dts: {
+      compiler: 'tsgo',
+    },
+  },
+};
+```
+
+> 注：father 会依次识别项目中的 `typescript@7`、`@typescript/native` alias，并回退兼容 `@typescript/native-preview`。为避免所有用户默认安装原生二进制，father 只会在启用 `compiler: 'tsgo'` 时检查这些依赖。
 
 ### extraBabelPlugins
 
@@ -102,6 +171,47 @@ father 以构建产物类型划分构建配置，其中 `esm`、`cjs` 产物为 
 
 指定产物的输出目录，`esm` 产物的默认输出目录为 `dist/esm`，`cjs` 产物的默认输出目录为 `dist/cjs`。
 
+#### autoExtension
+
+- 类型：`boolean`
+- 默认值：`false`
+- 支持 `esm`、`cjs` 和 `overrides`
+
+根据 package.json 的包类型和构建格式选择 JavaScript 文件后缀，并同步生成或复制的声明文件后缀：
+
+| 包类型                      | ESM 产物          | CJS 产物          |
+| --------------------------- | ----------------- | ----------------- |
+| `type: "module"`            | `.js` / `.d.ts`   | `.cjs` / `.d.cts` |
+| `type: "commonjs"` 或未设置 | `.mjs` / `.d.mts` | `.js` / `.d.ts`   |
+
+后缀选择参考 [Rslib 的 autoExtension](https://rslib.rs/config/lib/auto-extension)。为兼容 Father 4，默认关闭。Father 在开启时同时调整声明文件后缀，避免 `.mjs` 缺少匹配的 `.d.mts` 等类型入口问题。
+
+根 package.json 提供默认包类型；若源码中的 package.json 被复制到输出，则尊重该作用域的包类型，包括通过 `overrides` 移动的输出目录。显式 `.mjs`、`.cjs`、`.d.mts`、`.d.cts` 文件保持原有后缀。不会生成或修改 package.json。
+
+开启后，`redirect.js.extension` 和 `redirect.dts.extension` 默认启用，使文件中的模块引用匹配实际产物。支持 Babel、esbuild、SWC、并行构建、缓存、watch 和 source map。修改包类型、输出配置或关闭选项后，应重新执行一次默认的清理构建，避免 `clean: false` 或已有 watch 进程保留旧文件。
+
+#### redirect
+
+- 类型：`{ js?: { extension?: boolean }; dts?: { extension?: boolean } }`
+- 默认值：两个 `extension` 分别跟随 `autoExtension`，未开启时为 `false`
+- 支持 `esm`、`cjs` 和 `overrides`
+
+借鉴 [Rslib 的 redirect](https://rslib.rs/config/lib/redirect) 配置命名，分别控制 JavaScript 和声明文件中的相对模块引用补全。`js.extension` 处理导入、再导出、字面量 `import()`，以及 CJS 产物中的字面量 `require()`；`dts.extension` 处理声明中的导入、再导出、类型导入及模块扩充。
+
+例如 `./utils` 按实际产物补全为 `./utils.mjs` 或 `./utils/index.mjs`，已有 `./utils.js` 也会同步替换。路径跟随实际输出目录，支持 `overrides`。无法解析的相对无后缀路径会报错。该选项不修改文件本身的后缀或外部依赖路径。
+
+可以只开启 `redirect`，保留 `.js` 文件名并补全内部引用；也可以显式关闭其中一个 `extension`，将对应引用的处理交给消费方的构建工具。
+
+#### resolveDepSubpath
+
+- 类型：`boolean`
+- 默认值：`false`
+- 仅支持 `esm`，作用于整个 ESM 构建（包括 `overrides`）
+
+补全没有 `exports` 的依赖子路径，例如 `dayjs/plugin/weekday` → `dayjs/plugin/weekday.js`。同步处理 JavaScript 与声明文件；包入口、具有 `exports` 的依赖，以及无法解析的依赖保持原有路径。与 tsdown 的 `deps.resolveDepSubpath` 类似，独立于内部引用补全，仅在需要兼容这类旧式依赖时开启。
+
+以上能力均需显式开启，`exports.import` 和根 package.json 的 `type` 不会自动启用它们。现有配置的默认构建行为不变。这些选项不会将 CommonJS 依赖转换为 ESM，也不会使 CSS 导入或浏览器专用 API 获得 Node.js 支持。完整发布示例见[构建 ESModule 与 CommonJS 产物](./guide/esm-cjs.md#nodejs-原生-esm)。
+
 #### transformer
 
 - 类型：`babel` | `esbuild` | `swc`
@@ -149,6 +259,39 @@ export default {
 - 默认值：`undefined`
 
 配置将源码打包为 UMD 产物，支持以下子配置项，也支持覆盖外部的公共配置项。
+
+#### bundler
+
+- 类型: `'webpack' | 'utoopack'`
+- 默认值: `'webpack'`
+
+用于指定 UMD 构建的 bundler 类型，默认为 `webpack`，utoopack 为 utoo 工具链的 Rust Bundler(对比 Webpack 约有 3x - 5x 的构建速度提升)，参考: [Utoo bundler](https://github.com/umijs/mako?tab=readme-ov-file#%EF%B8%8F-bundler)。
+
+开启 `utoopack` 之后，注意 webpack 相关的一些配置不再兼容，例如 chainWebpack 等。
+
+#### utoopack
+
+- 类型：`Partial<@utoo/pack Config>`
+- 默认值：`undefined`
+
+向 Utoopack 透传 UMD 构建配置。用户配置会与 Father 生成的默认配置进行深度合并，同名字段以用户配置为准。
+
+```ts
+export default {
+  umd: {
+    bundler: 'utoopack',
+    utoopack: {
+      optimization: {
+        extractComments: true,
+        compress: {
+          passes: 3,
+        },
+        treeShaking: false,
+      },
+    },
+  },
+};
+```
 
 #### name
 
@@ -212,6 +355,13 @@ export default {
 - 默认值：`dist/umd`
 
 指定产物的输出目录及输出文件名，输出目录的默认值为 `dist/umd`，输出文件名在单 `entry` 时默认以 NPM 包名命名、多 `entry` 时默认与源码文件同名。
+
+#### transformRuntime
+
+- 类型：`{ absoluteRuntime?: string }`
+- 默认值：`{}`
+
+配置 transform-runtime 插件的部分功能。
 
 #### externals
 

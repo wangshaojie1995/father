@@ -1,5 +1,9 @@
 import type { Root, SchemaLike } from '@umijs/utils/compiled/@hapi/joi';
-import { IFatherJSTransformerTypes, IFatherPlatformTypes } from '../../types';
+import {
+  IFatherDtsCompilerTypes,
+  IFatherJSTransformerTypes,
+  IFatherPlatformTypes,
+} from '../../types';
 
 function getCommonSchemas(): Record<string, (Joi: Root) => any> {
   return {
@@ -17,6 +21,14 @@ function getCommonSchemas(): Record<string, (Joi: Root) => any> {
     extraBabelPlugins: (Joi) => Joi.array().optional(),
     sourcemap: (Joi) => Joi.boolean().optional(),
     targets: (Joi) => Joi.object().optional(),
+    dts: (Joi) =>
+      Joi.object({
+        compiler: Joi.equal(
+          IFatherDtsCompilerTypes.TSC,
+          IFatherDtsCompilerTypes.TSGO,
+        ).optional(),
+        failOnError: Joi.boolean(),
+      }).optional(),
   };
 }
 
@@ -33,6 +45,11 @@ function getCommonSchemasJoi(Joi: Root) {
 function getBundlessSchemas(Joi: Root) {
   return Joi.object({
     ...getCommonSchemasJoi(Joi),
+    autoExtension: Joi.boolean(),
+    redirect: Joi.object({
+      js: Joi.object({ extension: Joi.boolean() }),
+      dts: Joi.object({ extension: Joi.boolean() }),
+    }),
     input: Joi.string(),
     output: Joi.string(),
     transformer: Joi.equal(
@@ -50,7 +67,10 @@ export function getSchemas(): Record<string, (Joi: Root) => any> {
   return {
     ...getCommonSchemas(),
     extends: (Joi) => Joi.string(),
-    esm: (Joi) => getBundlessSchemas(Joi),
+    esm: (Joi) =>
+      getBundlessSchemas(Joi).keys({
+        resolveDepSubpath: Joi.boolean(),
+      }),
     cjs: (Joi) => getBundlessSchemas(Joi),
     umd: (Joi) =>
       Joi.object({
@@ -64,10 +84,21 @@ export function getSchemas(): Record<string, (Joi: Root) => any> {
           Joi.string(),
           Joi.array(),
         ),
+        generateUnminified: Joi.boolean().optional(),
+        transformRuntime: Joi.object({
+          absoluteRuntime: Joi.string().optional(),
+        }).optional(),
         chainWebpack: Joi.function().optional(),
         extractCSS: Joi.boolean().optional(),
         name: Joi.string().optional(),
         theme: Joi.object().pattern(Joi.string(), Joi.string()),
+        bundler: Joi.string().optional(),
+        rootPath: Joi.string().optional(),
+        copy: Joi.array()
+          .items(Joi.object().pattern(Joi.string(), Joi.string()))
+          .optional(),
+        concatenateModules: Joi.boolean().optional(),
+        utoopack: Joi.object().unknown(true).optional(),
       }),
     prebundle: (Joi) =>
       Joi.object({
